@@ -7,7 +7,7 @@
 const volatile pid_t targ_pid = 0;
 const volatile pid_t targ_tgid = 0;
 const volatile uid_t targ_uid = 0;
-const volatile bool targ_failed = false;
+const volatile bool targ_failed = true;
 
 #define TASK_COMM_LEN 16
 #define NAME_MAX 255
