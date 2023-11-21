@@ -65,7 +65,8 @@ bool trace_allowed(u32 tgid, u32 pid)
 	return true;
 }
 
-SEC("tracepoint/syscalls/sys_enter_open")
+// ericsu - tracepoint doesn't exist on overlake
+// SEC("tracepoint/syscalls/sys_enter_open")
 int tracepoint__syscalls__sys_enter_open(struct trace_event_raw_sys_enter* ctx)
 {
 	u64 id = bpf_get_current_pid_tgid();
@@ -140,7 +141,8 @@ cleanup:
 	return 0;
 }
 
-SEC("tracepoint/syscalls/sys_exit_open")
+// ericsu - tracepoint doesn't exist on overlake
+// SEC("tracepoint/syscalls/sys_exit_open")
 int tracepoint__syscalls__sys_exit_open(struct trace_event_raw_sys_exit* ctx)
 {
 	return trace_exit(ctx);
