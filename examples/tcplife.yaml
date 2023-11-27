@@ -1,0 +1,50 @@
+metrics:
+  counters: 
+    - name: tcplife_events
+      help: Trace the lifespan of TCP sessions and summarize
+      perf_event_array: true
+      labels:
+        - name: saddr
+          size: 16
+          decoders:
+            - name: inet_ip
+        - name: daddr
+          size: 16
+          decoders:
+            - name: inet_ip
+        - name: ts_us
+          size: 8
+          decoders:
+            - name: uint
+        - name: span_us
+          size: 8
+          decoders:
+            - name: uint
+        - name: rx_b
+          size: 8
+          decoders:
+            - name: uint
+        - name: tx_b
+          size: 8
+          decoders:
+            - name: uint
+        - name: pid
+          size: 4
+          decoders:
+            - name: uint
+        - name: sport
+          size: 2
+          decoders:
+            - name: uint
+        - name: dport
+          size: 2
+          decoders:
+            - name: uint
+        - name: family
+          size: 2
+          decoders:
+            - name: uint
+        - name: comm
+          size: 16
+          decoders:
+            - name: string
