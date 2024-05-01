@@ -22,13 +22,15 @@ GO_LDFLAGS_VARS := -X $(BUILD_VAR_PREFIX).Version=$(BUILD_VERSION) \
 
 CLANG_FORMAT_FILES = ${wildcard examples/*.c examples/*.h benchmark/probes/*.c benchmark/probes/*.h}
 
+# * cachestat-pre-kernel-5.16 fails to attach in newer kernels (see code)
 # * kfree_skb doesn't load in ci, possibly due to older verifier
+# * llcstat requires real hardware to attach perf events, which is not present in ci
 # * pci doesn't load in ci, possibly due to older verifier
 # * unix-socket-backlog requires a newer kernel than we have in ci
-CONFIGS_TO_IGNORE_IN_CHECK := kfree_skb pci unix-socket-backlog
+CONFIGS_TO_IGNORE_IN_CHECK := cachestat-pre-kernel-5.16 kfree_skb llcstat pci unix-socket-backlog
 CONFIGS_TO_CHECK := $(filter-out $(CONFIGS_TO_IGNORE_IN_CHECK), ${patsubst examples/%.yaml, %, ${wildcard examples/*.yaml}})
 
-export CGO_LDFLAGS := -l bpf
+CGO_LDFLAGS := -l bpf
 
 include Makefile.libbpf
 
@@ -41,7 +43,7 @@ endif
 .PHONY: lint
 lint:
 	go mod verify
-	golangci-lint run ./...
+	CGO_LDFLAGS="$(CGO_LDFLAGS)" CGO_CFLAGS="$(CGO_CFLAGS)" golangci-lint run ./...
 
 .PHONY: jsonschema
 jsonschema:
@@ -49,11 +51,11 @@ jsonschema:
 
 .PHONY: clang-format-check
 clang-format-check:
-	clang-format --dry-run --verbose -Werror $(CLANG_FORMAT_FILES)
+	./scripts/clang-format-check.sh $(CLANG_FORMAT_FILES)
 
 .PHONY: test
 test: $(LIBBPF_DEPS)
-	go test -ldflags='-extldflags "-static"' $(GO_TEST_ARGS) ./...
+	CGO_LDFLAGS="$(CGO_LDFLAGS)" CGO_CFLAGS="$(CGO_CFLAGS)" go test -ldflags='-extldflags "-static"' $(GO_TEST_ARGS) ./...
 
 .PHONY: test-privileged
 test-privileged:
@@ -61,14 +63,14 @@ test-privileged:
 
 .PHONY: config-check
 config-check:
-	sudo ./ebpf_exporter --config.check --config.dir=examples --config.names=$(shell echo $(CONFIGS_TO_CHECK) | tr ' ' ',')
+	sudo ./ebpf_exporter --capabilities.keep=none --config.check --config.strict --config.dir=examples --config.names=$(shell echo $(CONFIGS_TO_CHECK) | tr ' ' ',')
 
 .PHONY: build
 build: build-static
 
 .PHONY: build-static
 build-static:
-	$(MAKE) build-binary GO_LDFLAGS='-extldflags "-static"'
+	$(MAKE) build-binary GO_BUILD_ARGS="-tags netgo,osusergo" GO_LDFLAGS='-extldflags "-static"'
 
 .PHONY: build-dynamic
 build-dynamic:
@@ -76,8 +78,23 @@ build-dynamic:
 
 .PHONY: build-binary
 build-binary: $(LIBBPF_DEPS)
-	go build -o ebpf_exporter -v -ldflags="$(GO_LDFLAGS) $(GO_LDFLAGS_VARS)" ./cmd/ebpf_exporter
+	CGO_LDFLAGS="$(CGO_LDFLAGS)" CGO_CFLAGS="$(CGO_CFLAGS)" go build $(GO_BUILD_ARGS) -o ebpf_exporter -v -ldflags="$(GO_LDFLAGS) $(GO_LDFLAGS_VARS)" ./cmd/ebpf_exporter
+
+.PHONY: examples
+examples:
+	$(MAKE) -C examples
+
+.PHONY: tracing-demos
+tracing-demos:
+	$(MAKE) -C tracing/demos
 
 .PHONY: syscalls
 syscalls:
-	go run ./scripts/mksyscalls --strace.version v6.4
+	go run ./scripts/mksyscalls --strace.version v6.8
+
+.PHONY: clean
+clean:
+	rm -rf ebpf_exporter libbpf
+	$(MAKE) -C tracing/demos clean
+	$(MAKE) -C examples clean
+	$(MAKE) -C benchmark clean

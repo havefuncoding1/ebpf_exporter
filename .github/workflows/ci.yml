@@ -13,7 +13,7 @@ jobs:
     name: Build libbpf in Docker (x86_64)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Build libbpf
         run: |
@@ -22,10 +22,11 @@ jobs:
           docker cp $id:/build/libbpf.tar.gz libbpf.x86_64.tar.gz
 
       - name: Upload libbpf.tar.gz
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: libbpf.x86_64.tar.gz
           path: libbpf.x86_64.tar.gz
+          if-no-files-found: error
 
   build-libbpf-docker-aarch64:
     name: Build libbpf in Docker (aarch64, emulated)
@@ -36,7 +37,7 @@ jobs:
         with:
           platforms: arm64
 
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Build libbpf
         run: |
@@ -45,30 +46,58 @@ jobs:
           docker cp $id:/build/libbpf.tar.gz libbpf.aarch64.tar.gz
 
       - name: Upload libbpf.tar.gz
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: libbpf.aarch64.tar.gz
           path: libbpf.aarch64.tar.gz
+          if-no-files-found: error
 
   build-ebpf-exporter-docker-x86_64:
     name: Build ebpf_exporter in Docker (x86_64, built-in libbpf)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Fetch with tags to have the build version attached
 
-      - name: Build libbpf and ebpf_exporter
+      - name: Build ebpf_exporter and examples
         run: |
           docker buildx build --progress plain --tag ebpf_exporter .
-          id=$(docker create ebpf_exporter)
-          docker cp $id:/ebpf_exporter ebpf_exporter.x86_64
+          docker create --name ebpf_exporter ebpf_exporter
+
+      - name: Extract ebpf_exporter.x86_64
+        run: |
+          docker cp ebpf_exporter:/ebpf_exporter ebpf_exporter
 
       - name: Upload ebpf_exporter
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ebpf_exporter.x86_64
-          path: ebpf_exporter.x86_64
+          path: ebpf_exporter
+          if-no-files-found: error
+
+      - name: Extract examples.x86_64.tar.gz
+        run: |
+          docker cp ebpf_exporter:/examples ./
+          tar -cvzf examples.x86_64.tar.gz -T <(find examples | grep -E "\.(yaml|bpf.o)$")
+
+      - name: Upload examples.x86_64.tar.gz
+        uses: actions/upload-artifact@v4
+        with:
+          name: examples.x86_64.tar.gz
+          path: examples.x86_64.tar.gz
+          if-no-files-found: error
+
+      - name: Extract ebpf_exporter_with_examples.x86_64.tar.gz
+        run: |
+          tar -cvzf ebpf_exporter_with_examples.x86_64.tar.gz --transform "s,\(.*\),ebpf_exporter-$(git describe --tags)/\1," -T <(echo ebpf_exporter; find examples | grep -E "\.(yaml|bpf.o)$" | sort)
+
+      - name: Upload ebpf_exporter_with_examples.x86_64.tar.gz
+        uses: actions/upload-artifact@v4
+        with:
+          name: ebpf_exporter_with_examples.x86_64.tar.gz
+          path: ebpf_exporter_with_examples.x86_64.tar.gz
+          if-no-files-found: error
 
   build-ebpf-exporter-docker-aarch64:
     name: Build ebpf_exporter in Docker (aarch64, emulated, built-in libbpf)
@@ -79,35 +108,62 @@ jobs:
         with:
           platforms: arm64
 
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Fetch with tags to have the build version attached
 
-      - name: Build ebpf_exporter
+      - name: Build ebpf_exporter and examples
         run: |
           docker buildx build --progress plain --tag ebpf_exporter --platform linux/arm64 .
-          id=$(docker create ebpf_exporter)
-          docker cp $id:/ebpf_exporter ebpf_exporter.aarch64
+          docker create --name ebpf_exporter ebpf_exporter
+
+      - name: Extract ebpf_exporter.aarch64
+        run: |
+          docker cp ebpf_exporter:/ebpf_exporter ebpf_exporter
 
       - name: Upload ebpf_exporter
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ebpf_exporter.aarch64
-          path: ebpf_exporter.aarch64
+          path: ebpf_exporter
+          if-no-files-found: error
+
+      - name: Extract examples.aarch64.tar.gz
+        run: |
+          docker cp ebpf_exporter:/examples ./
+          tar -cvzf examples.aarch64.tar.gz -T <(find examples | grep -E "\.(yaml|bpf.o)$")
+
+      - name: Upload examples.aarch64.tar.gz
+        uses: actions/upload-artifact@v4
+        with:
+          name: examples.aarch64.tar.gz
+          path: examples.aarch64.tar.gz
+          if-no-files-found: error
+
+      - name: Extract ebpf_exporter_with_examples.aarch64.tar.gz
+        run: |
+          tar -cvzf ebpf_exporter_with_examples.aarch64.tar.gz --transform "s,\(.*\),ebpf_exporter-$(git describe --tags)/\1," -T <(echo ebpf_exporter; find examples | grep -E "\.(yaml|bpf.o)$" | sort)
+
+      - name: Upload ebpf_exporter_with_examples.aarch64.tar.gz
+        uses: actions/upload-artifact@v4
+        with:
+          name: ebpf_exporter_with_examples.aarch64.tar.gz
+          path: ebpf_exporter_with_examples.aarch64.tar.gz
+          if-no-files-found: error
 
   build-ebpf-exporter-static-x86_64-system-libbpf:
     name: Build ebpf_exporter (x86_64, statically linked, system libbpf)
     needs: build-libbpf-docker-x86_64
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/setup-go@v3
-        with:
-          go-version: ^1.21
+      - uses: actions/checkout@v4
 
-      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ^1.22
 
       - name: Download libbpf.tar.gz
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: libbpf.x86_64.tar.gz
 
@@ -123,6 +179,9 @@ jobs:
       - name: Check static linkage
         run: (ldd --verbose ./ebpf_exporter 2>&1 || true) | grep 'not a dynamic executable'
 
+      - name: Check for nss presence
+        run: if [[ $(objdump -tT ebpf_exporter | grep 'hidden _nss') ]]; then echo "unexpected nss symbols found"; exit 1; fi
+
       - name: Check that it runs
         run: ./ebpf_exporter --version
 
@@ -130,11 +189,11 @@ jobs:
     name: Build ebpf_exporter (x86_64, statically linked, built-in libbpf)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/setup-go@v3
-        with:
-          go-version: ^1.21
+      - uses: actions/checkout@v4
 
-      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ^1.22
 
       - name: Install libelf-dev
         run: sudo apt-get install -y libelf-dev
@@ -145,6 +204,9 @@ jobs:
       - name: Check static linkage
         run: (ldd --verbose ./ebpf_exporter 2>&1 || true) | grep 'not a dynamic executable'
 
+      - name: Check for nss presence
+        run: if [[ $(objdump -tT ebpf_exporter | grep 'hidden _nss') ]]; then echo "unexpected nss symbols found"; exit 1; fi
+
       - name: Check that it runs
         run: ./ebpf_exporter --version
 
@@ -153,14 +215,14 @@ jobs:
     needs: build-libbpf-docker-x86_64
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/setup-go@v3
-        with:
-          go-version: ^1.21
+      - uses: actions/checkout@v4
 
-      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ^1.22
 
       - name: Download libbpf.tar.gz
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: libbpf.x86_64.tar.gz
 
@@ -183,11 +245,11 @@ jobs:
     name: Build ebpf_exporter (x86_64, dynamically linked, built-in libbpf)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/setup-go@v3
-        with:
-          go-version: ^1.21
+      - uses: actions/checkout@v4
 
-      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ^1.22
 
       - name: Install libelf-dev
         run: sudo apt-get install -y libelf-dev
@@ -206,14 +268,17 @@ jobs:
     needs: build-libbpf-docker-x86_64
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/setup-go@v3
-        with:
-          go-version: ^1.21
+      - uses: actions/checkout@v4
 
-      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ^1.22
+
+      - name: Install systemtap-sdt-dev
+        run: sudo apt-get install -y systemtap-sdt-dev
 
       - name: Download libbpf.tar.gz
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: libbpf.x86_64.tar.gz
 
@@ -238,11 +303,14 @@ jobs:
     name: Test ebpf_exporter (x86_64, built-in libbpf)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/setup-go@v3
-        with:
-          go-version: ^1.21
+      - uses: actions/checkout@v4
 
-      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ^1.22
+
+      - name: Install systemtap-sdt-dev
+        run: sudo apt-get install -y systemtap-sdt-dev
 
       - name: Install libelf-dev
         run: sudo apt-get install -y libelf-dev
@@ -258,45 +326,19 @@ jobs:
       - name: Test privileged
         run: make -j $(nproc) test-privileged
 
-  lint-ebpf-exporter-x86_64-system-libbpf:
-    name: Lint ebpf_exporter (x86_64, system libbpf)
-    needs: build-libbpf-docker-x86_64
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/setup-go@v3
-        with:
-          go-version: ^1.21
-
-      - uses: actions/checkout@v3
-
-      - name: Download libbpf.tar.gz
-        uses: actions/download-artifact@v3
-        with:
-          name: libbpf.x86_64.tar.gz
-
-      - name: Install libbpf
-        run: sudo tar -C / -xvvf libbpf.x86_64.tar.gz
-
-      - name: Install libelf-dev
-        run: sudo apt-get install -y libelf-dev
-
-      - name: Check vendored dependencies
-        run: go mod verify
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v3
-        with:
-          version: v1.54.2
-
   lint-ebpf-exporter-x86_64-built-in-libbpf:
     name: Lint ebpf_exporter (x86_64, built-in libbpf)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/setup-go@v3
-        with:
-          go-version: ^1.21
+      - uses: actions/checkout@v4
 
-      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ^1.22
+          cache: false # https://github.com/golangci/golangci-lint-action/issues/807
+
+      - name: Install systemtap-sdt-dev
+        run: sudo apt-get install -y systemtap-sdt-dev
 
       - name: Install libelf-dev
         run: sudo apt-get install -y libelf-dev
@@ -308,9 +350,9 @@ jobs:
         run: go mod verify
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v3
+        uses: golangci/golangci-lint-action@v4
         with:
-          version: v1.54.2
+          version: v1.56.2
         env:
           CGO_CFLAGS: "-I${{ github.workspace }}/libbpf/dest/usr/include"
 
@@ -319,10 +361,10 @@ jobs:
     needs: build-libbpf-docker-x86_64
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Download libbpf.tar.gz
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: libbpf.x86_64.tar.gz
 
@@ -345,7 +387,7 @@ jobs:
     name: Build examples (x86_64, built-in libbpf)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install libelf-dev
         run: sudo apt-get install -y libelf-dev
@@ -359,39 +401,61 @@ jobs:
       - name: Build example bpf probes
         run: make -j $(nproc) -C examples build
 
-      - name: Save built examples into examples.x86_64.tar.gz
-        run: tar -cvzf examples.x86_64.tar.gz -T <(find examples | grep -E "\.(yaml|bpf.o)$")
+  build-tracing-demos-x86_64:
+    name: Build tracing demos (x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Upload examples.x86_64.tar.gz
-        uses: actions/upload-artifact@v3
+      - uses: actions/setup-go@v5
         with:
-          name: examples.x86_64.tar.gz
-          path: examples.x86_64.tar.gz
+          go-version: ^1.22
+
+      - name: Install systemtap-sdt-dev
+        run: sudo apt-get install -y systemtap-sdt-dev
+
+      - name: Build
+        run: make -j $(nproc) tracing-demos
+
+      - name: Extract tracing-demos.x86_64.tar.gz
+        run: |
+          tar -cvzf tracing-demos.x86_64.tar.gz tracing/demos/*/demo
+
+      - name: Upload tracing-demos.x86_64.tar.gz
+        uses: actions/upload-artifact@v4
+        with:
+          name: tracing-demos.x86_64.tar.gz
+          path: tracing-demos.x86_64.tar.gz
+          if-no-files-found: error
 
   check-configs-x86_64:
     name: Check examples
     runs-on: ubuntu-22.04
     needs:
       - build-ebpf-exporter-docker-x86_64
-      - build-examples-x86_64-built-in-libbpf
+      - build-tracing-demos-x86_64
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Download examples.x86_64.tar.gz
-        uses: actions/download-artifact@v3
+      - name: Download ebpf_exporter_with_examples.x86_64.tar.gz
+        uses: actions/download-artifact@v4
         with:
-          name: examples.x86_64.tar.gz
+          name: ebpf_exporter_with_examples.x86_64.tar.gz
 
-      - name: Extract examples.x86_64.tar.gz
-        run: tar -xzvf examples.x86_64.tar.gz
+      - name: Extract ebpf_exporter_with_examples.x86_64.tar.gz
+        run: tar --strip-components 1 -xzvf ebpf_exporter_with_examples.x86_64.tar.gz
 
-      - name: Download ebpf_exporter.x86_64
-        uses: actions/download-artifact@v3
+      - name: Download tracing-demos.x86_64.tar.gz
+        uses: actions/download-artifact@v4
         with:
-          name: ebpf_exporter.x86_64
+          name: tracing-demos.x86_64.tar.gz
 
-      - name: Put ebpf_exporter.x86_64 into place
-        run: mv ebpf_exporter.x86_64 ebpf_exporter && chmod +x ebpf_exporter
+      - name: Extract tracing-demos.x86_64.tar.gz
+        run: tar -xzvf tracing-demos.x86_64.tar.gz
+
+      # Some programs expect to attach to symbols in modules
+      - name: Load expected kernel modules
+        run: sudo modprobe xfs
 
       - name: Run configuration check
         run: make config-check
@@ -400,7 +464,7 @@ jobs:
     name: Run clang-format check
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install clang-format
         run: sudo apt-get install -y clang-format make
@@ -412,7 +476,7 @@ jobs:
     name: Run jsonschema checks
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install jsonschema dependencies
         run: sudo apt-get install -y python3-jsonschema make
@@ -435,7 +499,7 @@ jobs:
         with:
           platforms: arm64
 
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Fetch with tags to have the build version attached
 
@@ -470,3 +534,62 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64,linux/arm64
           provenance: false # https://github.com/docker/build-push-action/issues/755
+
+  release-archive:
+    name: Release archive
+    runs-on: ubuntu-22.04
+    needs:
+      - build-ebpf-exporter-docker-aarch64
+      - build-ebpf-exporter-docker-x86_64
+    steps:
+      - name: Download ebpf_exporter.aarch64
+        uses: actions/download-artifact@v4
+        with:
+          name: ebpf_exporter.aarch64
+
+      - name: Rename ebpf_exporter.aarch64
+        run: mv ebpf_exporter ebpf_exporter.aarch64
+
+      - name: Download ebpf_exporter.x86_64
+        uses: actions/download-artifact@v4
+        with:
+          name: ebpf_exporter.x86_64
+
+      - name: Rename ebpf_exporter.x86_64
+        run: mv ebpf_exporter ebpf_exporter.x86_64
+
+      - name: Download examples.aarch64.tar.gz
+        uses: actions/download-artifact@v4
+        with:
+          name: examples.aarch64.tar.gz
+
+      - name: Download examples.x86_64.tar.gz
+        uses: actions/download-artifact@v4
+        with:
+          name: examples.x86_64.tar.gz
+
+      - name: Download ebpf_exporter_with_examples.aarch64.tar.gz
+        uses: actions/download-artifact@v4
+        with:
+          name: ebpf_exporter_with_examples.aarch64.tar.gz
+
+      - name: Download ebpf_exporter_with_examples.x86_64.tar.gz
+        uses: actions/download-artifact@v4
+        with:
+          name: ebpf_exporter_with_examples.x86_64.tar.gz
+
+      - name: Mark ebpf_exporter binaries as executable
+        run: chmod +x ebpf_exporter.aarch64 ebpf_exporter.x86_64
+
+      - name: Create sha256sums.txt
+        run: shasum -a 256 * > sha256sums.txt
+
+      - name: Create release archive
+        run: tar -czf release.tar.gz --transform "s,\(.*\),ebpf_exporter-${GITHUB_SHA}/\1," *
+
+      - name: Upload release.tar.gz
+        uses: actions/upload-artifact@v4
+        with:
+          name: release.tar.gz
+          path: release.tar.gz
+          if-no-files-found: error

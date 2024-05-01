@@ -2,6 +2,7 @@ package decoder
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/cloudflare/ebpf_exporter/v2/config"
@@ -36,6 +37,32 @@ func TestDecodeLabels(t *testing.T) {
 				{
 					Name: "number",
 					Size: 4,
+					Decoders: []config.Decoder{
+						{
+							Name: "uint",
+						},
+					},
+				},
+				{
+					Name: "fruit",
+					Size: 32,
+					Decoders: []config.Decoder{
+						{
+							Name: "string",
+						},
+					},
+				},
+			},
+			out: []string{"8", "bananas"},
+			err: false,
+		},
+		{
+			in: append([]byte{0x8, 0x1, 0x1, 0x1}, zeroPaddedString("bananas", 32)...),
+			labels: []config.Label{
+				{
+					Name:    "number",
+					Size:    1,
+					Padding: 3, // only first byte should be used  for the label
 					Decoders: []config.Decoder{
 						{
 							Name: "uint",
@@ -120,13 +147,13 @@ func TestDecodeLabels(t *testing.T) {
 		},
 	}
 
-	for _, c := range cases {
+	for i, c := range cases {
 		s, err := NewSet()
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		out, err := s.DecodeLabels(c.in, c.labels)
+		out, err := s.DecodeLabelsForMetrics(c.in, fmt.Sprintf("test:%d", i), c.labels)
 		if c.err {
 			if err == nil {
 				t.Errorf("Expected error for input %#v and labels %#v, but did not receive it", c.in, c.labels)
@@ -149,6 +176,197 @@ func TestDecodeLabels(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestDecoderSetConcurrency(t *testing.T) {
+	in := append([]byte{0x8, 0x0, 0x0, 0x0}, zeroPaddedString("bananas", 32)...)
+
+	labels := []config.Label{
+		{
+			Name: "number",
+			Size: 4,
+			Decoders: []config.Decoder{
+				{
+					Name: "uint",
+				},
+			},
+		},
+		{
+			Name: "fruit",
+			Size: 32,
+			Decoders: []config.Decoder{
+				{
+					Name: "string",
+				},
+				{
+					Name: "regexp",
+					Regexps: []string{
+						"^bananas$",
+						"$is-banana-even-fruit$",
+					},
+				},
+			},
+		},
+	}
+
+	s, err := NewSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	count := 1000
+
+	wg := sync.WaitGroup{}
+	wg.Add(count)
+
+	for i := 0; i < count; i++ {
+		go func() {
+			defer wg.Done()
+
+			_, err := s.DecodeLabelsForMetrics(in, "concurrency", labels)
+			if err != nil {
+				t.Error(err)
+			}
+
+			_, err = s.DecodeLabelsForTracing(in, labels)
+			if err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
+func TestDecoderSetCache(t *testing.T) {
+	in := []byte{0xba, 0xbe, 0xba, 0xbe, 0xde, 0xad, 0xbe, 0xef}
+
+	one := []config.Label{
+		{
+			Name: "single_u64",
+			Size: 8,
+			Decoders: []config.Decoder{
+				{
+					Name: "uint",
+				},
+			},
+		},
+	}
+
+	two := []config.Label{
+		{
+			Name: "u32_one",
+			Size: 4,
+			Decoders: []config.Decoder{
+				{
+					Name: "uint",
+				},
+			},
+		},
+		{
+			Name: "u32_two",
+			Size: 4,
+			Decoders: []config.Decoder{
+				{
+					Name: "uint",
+				},
+			},
+		},
+	}
+
+	s, err := NewSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	single, err := s.DecodeLabelsForMetrics(in, "one", one)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(single) != 1 {
+		t.Errorf("Expected one u64 from %#v, got %#v", one, single)
+	}
+
+	double, err := s.DecodeLabelsForMetrics(in, "two", two)
+	if err != nil {
+		t.Error(err)
+	}
+
+	if len(double) != 2 {
+		t.Errorf("Expected two u32 from %#v, got %#v", two, double)
+	}
+}
+
+func BenchmarkCache(b *testing.B) {
+	in := []byte{
+		0x8, 0xab, 0xce, 0xef,
+		0xde, 0xad,
+		0xbe, 0xef,
+		0x8, 0xab, 0xce, 0xef, 0x8, 0xab, 0xce, 0xef,
+	}
+
+	labels := []config.Label{
+		{
+			Name: "number1",
+			Size: 4,
+			Decoders: []config.Decoder{
+				{
+					Name: "uint",
+				},
+			},
+		},
+		{
+			Name: "number2",
+			Size: 2,
+			Decoders: []config.Decoder{
+				{
+					Name: "uint",
+				},
+			},
+		},
+		{
+			Name: "number3",
+			Size: 2,
+			Decoders: []config.Decoder{
+				{
+					Name: "uint",
+				},
+			},
+		},
+		{
+			Name: "number4",
+			Size: 8,
+			Decoders: []config.Decoder{
+				{
+					Name: "uint",
+				},
+			},
+		},
+	}
+
+	s, err := NewSet()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.Run("direct", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_, err := s.decodeLabels(in, labels)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("cached", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_, err := s.DecodeLabelsForMetrics(in, "test", labels)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
 
 func zeroPaddedString(in string, size int) []byte {

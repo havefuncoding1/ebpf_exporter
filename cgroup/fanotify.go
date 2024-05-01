@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -42,7 +43,7 @@ func newFanotifyMonitor(path string) (*fanotifyMonitor, error) {
 	}
 
 	if !dacAllowed {
-		return nil, fmt.Errorf("missing CAP_DAC_READ_SEARCH needed for open_by_handle_at in fanotify monitor")
+		return nil, errors.New("missing CAP_DAC_READ_SEARCH needed for open_by_handle_at in fanotify monitor")
 	}
 
 	mapping, err := walk(path)
@@ -86,11 +87,11 @@ func (m *fanotifyMonitor) readFanotifyLoop() error {
 		}
 
 		if metadata.Mask&unix.FAN_CREATE == 0 {
-			return fmt.Errorf("fanotify event for non-create event")
+			return errors.New("fanotify event for non-create event")
 		}
 
 		if metadata.Mask&unix.FAN_ONDIR == 0 {
-			return fmt.Errorf("fanotify event for non-directory")
+			return errors.New("fanotify event for non-directory")
 		}
 
 		size := int(metadata.Event_len) - int(metadata.Metadata_len)
@@ -188,7 +189,7 @@ func (m *fanotifyMonitor) Resolve(id int) string {
 }
 
 // The following kernel patch is required to take advantage of this (included in v6.6-rc1):
-// * https://github.com/torvalds/linux/commit/0ce7c12e88cf
+// * https://git.kernel.org/torvalds/c/0ce7c12e88cf ("kernfs: attach uuid for every kernfs and report it in fsid")
 func attachFanotify(path string) (io.Reader, error) {
 	fd, err := unix.FanotifyInit(unix.FAN_CLASS_NOTIF|unix.FAN_REPORT_DFID_NAME, uint(0))
 	if err != nil {

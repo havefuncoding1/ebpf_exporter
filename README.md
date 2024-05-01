@@ -1,16 +1,24 @@
 # ebpf_exporter
 
-Prometheus exporter for custom eBPF metrics.
+Prometheus exporter for custom eBPF metrics and OpenTelemetry traces.
+
+* Metrics:
+
+![metrics](./examples/biolatency.png)
+
+* [Traces](./tracing):
+
+![tracing](./examples/exec-trace.png)
 
 Motivation of this exporter is to allow you to write eBPF code and export
 metrics that are not otherwise accessible from the Linux kernel.
 
-eBPF was [described by](https://lkml.org/lkml/2015/4/14/232) Ingo Molnár as:
+[ebpf.io](https://ebpf.io/what-is-ebpf/) describes eBPF:
 
-> One of the more interesting features in this cycle is the ability to attach
-> eBPF programs (user-defined, sandboxed bytecode executed by the kernel)
-> to kprobes. This allows user-defined instrumentation on a live kernel image
-> that can never crash, hang or interfere with the kernel negatively.
+> eBPF is a revolutionary technology with origins in the Linux kernel that can
+> run sandboxed programs in a privileged context such as the operating system
+> kernel. It is used to safely and efficiently extend the capabilities of the
+> kernel without requiring to change kernel source code or load kernel modules.
 
 An easy way of thinking about this exporter is bcc tools as prometheus metrics:
 
@@ -19,6 +27,9 @@ An easy way of thinking about this exporter is bcc tools as prometheus metrics:
 We use libbpf rather than legacy bcc driven code, so it's more like libbpf-tools:
 
 * https://github.com/iovisor/bcc/tree/master/libbpf-tools
+
+Producing [OpenTelemetry](https://opentelemetry.io/) compatible traces is also
+supported, see [Tracing docs](./tracing/) for more information on that.
 
 ## Reading material
 
@@ -120,6 +131,15 @@ Or with the publicly available prebuilt image:
 docker run --rm -it --privileged -p 9435:9435 \
   ghcr.io/cloudflare/ebpf_exporter --config.dir=examples --config.names=timers
 ```
+
+## Kubernetes Helm chart
+
+A third party helm chart is available here:
+
+* https://github.com/kubeservice-stack/kubservice-charts/tree/master/charts/kubeservice-ebpf-exporter
+
+Please note that the helm chart is not provided or supported by Cloudflare,
+so do your own due diligence and use it at your own risk.
 
 ## Benchmarking overhead
 
@@ -368,7 +388,7 @@ ebpf_exporter_bio_latency_seconds_count{device="nvme1n1",operation="write"} 1
 
 You can nicely plot this with Grafana:
 
-![Histogram](examples/bio.write.latency.png)
+![Histogram](./examples/biolatency.png)
 
 ## Configuration concepts
 
@@ -535,7 +555,8 @@ Is represented as:
 * 3 byte padding to align `slot`
 * 8 byte `slot` integer
 
-When decoding, label sizes should be supplied with padding included:
+When decoding, either specify the padding explicitly with the key `padding` or
+include it in the label size:
 
 * 4 for `dev`
 * 4 for `op` (1 byte value + 3 byte padding)
@@ -557,6 +578,11 @@ into a human readable string representing cgroup path, like:
 
 * `/sys/fs/cgroup/system.slice/ssh.service`
 
+#### ifname
+
+Ifname decoder takes a network interface index and converts it into its
+name like `eth0`.
+
 #### `dname`
 
 Dname decoder read DNS qname from string in wire format, then decode
@@ -570,6 +596,15 @@ could be used after `string` decode, like the following example:
     - name: string
     - name: dname
 ```
+
+#### `errno`
+
+Errno decoder converts `errno` number into a string representation like
+`EPIPE`. It is normally paired with a `unit` decoder as the first step.
+
+### `hex`
+
+Hex decoder turns bytes into their hex representation.
 
 #### `inet_ip`
 
@@ -748,7 +783,8 @@ See [Labels](#labels) section for more details.
 
 ```
 name: <prometheus label name>
-size: <field size with padding>
+size: <field size>
+padding: <padding size>
 decoders:
   [ - decoder ]
 ```
@@ -848,6 +884,17 @@ It requires `kernel.bpf_stats_enabled` sysctl to be enabled.
 
 It needs to be joined by `id` label with `ebpf_exporter_ebpf_program_info`
 to get more information about the program.
+
+### `ebpf_exporter_decoder_errors_total`
+
+This counter reports the number of times labels failed to be decoded by config.
+
+```
+# HELP ebpf_exporter_decoder_errors_total How many times has decoders encountered errors
+# TYPE ebpf_exporter_decoder_errors_total counter
+ebpf_exporter_decoder_errors_total{config="kstack"} 0
+ebpf_exporter_decoder_errors_total{config="sock-trace"} 4
+```
 
 ## License
 

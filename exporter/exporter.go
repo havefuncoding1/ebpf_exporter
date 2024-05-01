@@ -3,6 +3,7 @@ package exporter
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -10,13 +11,18 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"unsafe"
 
 	"github.com/aquasecurity/libbpfgo"
 	"github.com/cloudflare/ebpf_exporter/v2/config"
 	"github.com/cloudflare/ebpf_exporter/v2/decoder"
+	"github.com/cloudflare/ebpf_exporter/v2/tracing"
 	"github.com/cloudflare/ebpf_exporter/v2/util"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Namespace to use for all metrics
@@ -39,14 +45,18 @@ type Exporter struct {
 	programAttachedDesc      *prometheus.Desc
 	programRunTimeDesc       *prometheus.Desc
 	programRunCountDesc      *prometheus.Desc
-	attachedProgs            map[string]map[*libbpfgo.BPFProg]bool
+	decoderErrorCount        *prometheus.CounterVec
+	attachedProgs            map[string]map[*libbpfgo.BPFProg]*libbpfgo.BPFLink
 	descs                    map[string]map[string]*prometheus.Desc
 	decoders                 *decoder.Set
 	btfPath                  string
+	tracingProvider          tracing.Provider
+	active                   bool
+	activeMutex              sync.Mutex
 }
 
 // New creates a new exporter with the provided config
-func New(configs []config.Config, btfPath string) (*Exporter, error) {
+func New(configs []config.Config, tracingProvider tracing.Provider, btfPath string) (*Exporter, error) {
 	enabledConfigsDesc := prometheus.NewDesc(
 		prometheus.BuildFQName(prometheusNamespace, "", "enabled_configs"),
 		"The set of enabled configs",
@@ -82,6 +92,15 @@ func New(configs []config.Config, btfPath string) (*Exporter, error) {
 		nil,
 	)
 
+	decoderErrorCount := prometheus.NewCounterVec(
+		prometheus.CounterOpts{Namespace: prometheusNamespace, Name: "decoder_errors_total", Help: "How many times has decoders encountered errors"},
+		[]string{"config"},
+	)
+
+	for _, config := range configs {
+		decoderErrorCount.WithLabelValues(config.Name).Add(0.0)
+	}
+
 	decoders, err := decoder.NewSet()
 	if err != nil {
 		return nil, fmt.Errorf("error creating decoder set: %v", err)
@@ -96,93 +115,212 @@ func New(configs []config.Config, btfPath string) (*Exporter, error) {
 		programAttachedDesc: programAttachedDesc,
 		programRunTimeDesc:  programRunTimeDesc,
 		programRunCountDesc: programRunCountDesc,
-		attachedProgs:       map[string]map[*libbpfgo.BPFProg]bool{},
+		decoderErrorCount:   decoderErrorCount,
+		attachedProgs:       map[string]map[*libbpfgo.BPFProg]*libbpfgo.BPFLink{},
 		descs:               map[string]map[string]*prometheus.Desc{},
 		decoders:            decoders,
 		btfPath:             btfPath,
+		tracingProvider:     tracingProvider,
 	}, nil
 }
 
 // Attach injects eBPF into kernel and attaches necessary programs
 func (e *Exporter) Attach() error {
+	tracer := e.tracingProvider.Tracer("")
+
+	ctx, attachSpan := tracer.Start(context.Background(), "attach")
+	defer attachSpan.End()
+
+	_, registerHandlersSpan := tracer.Start(ctx, "register_handlers")
+	defer registerHandlersSpan.End()
+
 	err := registerHandlers()
 	if err != nil {
 		return fmt.Errorf("error registering libbpf handlers: %v", err)
 	}
+
 	err = registerXDPHandler()
 	if err != nil {
 		return fmt.Errorf("error registering xdp handlers: %v", err)
 	}
 
+	registerHandlersSpan.End()
+
+	ctx, attachConfigsSpan := tracer.Start(ctx, "attach_configs")
+	defer attachConfigsSpan.End()
+
 	for _, cfg := range e.configs {
-		if _, ok := e.modules[cfg.Name]; ok {
-			return fmt.Errorf("multiple configs with name %q", cfg.Name)
-		}
+		ctx, attachConfigSpan := tracer.Start(ctx, "attach_config", trace.WithAttributes(attribute.String("config", cfg.Name)))
 
-		args := libbpfgo.NewModuleArgs{
-			BPFObjPath:      cfg.BPFPath,
-			SkipMemlockBump: true, // Let libbpf itself decide whether it is needed
-		}
-
-		if e.btfPath != "" {
-			if _, err := os.Stat(e.btfPath); err == nil {
-				args.BTFObjPath = e.btfPath
-			} else if errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("could not find BTF file %q", e.btfPath)
-			} else {
-				return fmt.Errorf("failed to retrieve file info for %q: %v", e.btfPath, err)
-			}
-		}
-
-		module, err := libbpfgo.NewModuleFromFileArgs(args)
+		err = e.attachConfig(ctx, cfg)
 		if err != nil {
-			return fmt.Errorf("error creating module from %q for config %q: %v", cfg.BPFPath, cfg.Name, err)
+			attachConfigSpan.SetStatus(codes.Error, err.Error())
+			attachConfigSpan.End()
+			return err
 		}
 
-		if len(cfg.Kaddrs) > 0 {
-			err = e.passKaddrs(module, cfg)
-			if err != nil {
-				return fmt.Errorf("error passing kaddrs to config %q: %v", cfg.Name, err)
-			}
-		}
-
-		err = module.BPFLoadObject()
-		if err != nil {
-			return fmt.Errorf("error loading bpf object from %q for config %q: %v", cfg.BPFPath, cfg.Name, err)
-		}
-
-		attachments := attachModule(module, cfg)
-
-		err = validateMaps(module, cfg)
-		if err != nil {
-			return fmt.Errorf("error validating maps for config %q: %v", cfg.Name, err)
-		}
-
-		e.attachedProgs[cfg.Name] = attachments
-		e.modules[cfg.Name] = module
+		attachConfigSpan.End()
 	}
 
+	attachConfigsSpan.End()
+
 	postAttachMark()
+
+	e.active = true
 
 	return nil
 }
 
-func (e *Exporter) passKaddrs(module *libbpfgo.Module, cfg config.Config) error {
-	if len(e.kaddrs) == 0 {
-		if err := e.populateKaddrs(); err != nil {
-			return fmt.Errorf("error populating kaddrs: %v", err)
+func (e *Exporter) attachConfig(ctx context.Context, cfg config.Config) error {
+	tracer := e.tracingProvider.Tracer("")
+
+	if _, ok := e.modules[cfg.Name]; ok {
+		return fmt.Errorf("multiple configs with name %q", cfg.Name)
+	}
+
+	_, newModuleSpan := tracer.Start(ctx, "new_module")
+	defer newModuleSpan.End()
+
+	args := libbpfgo.NewModuleArgs{
+		BPFObjPath:      cfg.BPFPath,
+		SkipMemlockBump: true, // Let libbpf itself decide whether it is needed
+	}
+
+	if e.btfPath != "" {
+		if _, err := os.Stat(e.btfPath); err == nil {
+			args.BTFObjPath = e.btfPath
+		} else if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("could not find BTF file %q", e.btfPath)
+		} else {
+			return fmt.Errorf("failed to retrieve file info for %q: %v", e.btfPath, err)
 		}
 	}
 
-	for _, kaddr := range cfg.Kaddrs {
-		addr, ok := e.kaddrs[kaddr]
-		if !ok {
-			return fmt.Errorf("error finding kaddr for %q", kaddr)
+	module, err := libbpfgo.NewModuleFromFileArgs(args)
+	if err != nil {
+		return fmt.Errorf("error creating module from %q for config %q: %v", cfg.BPFPath, cfg.Name, err)
+	}
+
+	newModuleSpan.End()
+
+	if len(cfg.Kaddrs) > 0 {
+		err = e.passKaddrs(ctx, module, cfg)
+		if err != nil {
+			return fmt.Errorf("error passing kaddrs to config %q: %v", cfg.Name, err)
+		}
+	}
+
+	_, bpfLoadObjectSpan := tracer.Start(ctx, "bpf_load_object")
+	defer bpfLoadObjectSpan.End()
+
+	err = module.BPFLoadObject()
+	if err != nil {
+		return fmt.Errorf("error loading bpf object from %q for config %q: %v", cfg.BPFPath, cfg.Name, err)
+	}
+
+	bpfLoadObjectSpan.End()
+
+	_, attachModuleSpan := tracer.Start(ctx, "attach_module")
+
+	attachments := attachModule(attachModuleSpan, module, cfg)
+
+	attachModuleSpan.End()
+
+	err = validateMaps(module, cfg)
+	if err != nil {
+		return fmt.Errorf("error validating maps for config %q: %v", cfg.Name, err)
+	}
+
+	e.attachedProgs[cfg.Name] = attachments
+	e.modules[cfg.Name] = module
+
+	return nil
+}
+
+// Detach detaches bpf programs and maps for exiting
+func (e *Exporter) Detach() {
+	e.activeMutex.Lock()
+	defer e.activeMutex.Unlock()
+
+	e.active = false
+
+	tracer := e.tracingProvider.Tracer("")
+
+	ctx, attachSpan := tracer.Start(context.Background(), "detach")
+	defer attachSpan.End()
+
+	for name, module := range e.modules {
+		_, moduleCloseSpan := tracer.Start(ctx, "close_module", trace.WithAttributes(attribute.String("config", name)))
+
+		for prog, link := range e.attachedProgs[name] {
+			moduleCloseSpan.AddEvent("prog_detach", trace.WithAttributes(attribute.String("SEC", prog.SectionName())))
+
+			if err := link.Destroy(); err != nil {
+				log.Printf("Failed to detach program %q for config %q: %v", prog.Name(), name, err)
+				moduleCloseSpan.RecordError(err)
+				moduleCloseSpan.SetStatus(codes.Error, err.Error())
+			}
 		}
 
-		name := fmt.Sprintf("kaddr_%s", kaddr)
+		moduleCloseSpan.AddEvent("close")
+
+		module.Close()
+
+		moduleCloseSpan.End()
+	}
+}
+
+// MissedAttachments returns the list of module:prog names that failed to attach
+func (e *Exporter) MissedAttachments() []string {
+	missed := []string{}
+
+	for name, progs := range e.attachedProgs {
+		for prog, link := range progs {
+			if link != nil {
+				continue
+			}
+
+			missed = append(missed, fmt.Sprintf("%s:%s", name, prog.Name()))
+		}
+	}
+
+	return missed
+}
+
+func (e *Exporter) passKaddrs(ctx context.Context, module *libbpfgo.Module, cfg config.Config) error {
+	tracer := e.tracingProvider.Tracer("")
+
+	passKaddrsCtx, passKaddrsSpan := tracer.Start(ctx, "pass_kaddrs")
+	defer passKaddrsSpan.End()
+
+	if len(e.kaddrs) == 0 {
+		_, populateKaddrsSpan := tracer.Start(passKaddrsCtx, "populate_kaddrs")
+
+		if err := e.populateKaddrs(); err != nil {
+			err = fmt.Errorf("error populating kaddrs: %v", err)
+			populateKaddrsSpan.SetStatus(codes.Error, err.Error())
+			populateKaddrsSpan.End()
+			return err
+		}
+
+		populateKaddrsSpan.End()
+	}
+
+	for _, kaddr := range cfg.Kaddrs {
+		passKaddrsSpan.AddEvent("kaddr", trace.WithAttributes(attribute.String("symbol", kaddr)))
+
+		addr, ok := e.kaddrs[kaddr]
+		if !ok {
+			err := fmt.Errorf("error finding kaddr for %q", kaddr)
+			passKaddrsSpan.SetStatus(codes.Error, err.Error())
+			return err
+		}
+
+		name := "kaddr_" + kaddr
 		if err := module.InitGlobalVariable(name, addr); err != nil {
-			return fmt.Errorf("error setting kaddr value for %q (const volatile %q) to 0x%x: %v", kaddr, name, addr, err)
+			err = fmt.Errorf("error setting kaddr value for %q (const volatile %q) to 0x%x: %v", kaddr, name, addr, err)
+			passKaddrsSpan.SetStatus(codes.Error, err.Error())
+			return err
 		}
 	}
 
@@ -190,7 +328,7 @@ func (e *Exporter) passKaddrs(module *libbpfgo.Module, cfg config.Config) error 
 }
 
 // populateKaddrs populates cache of ksym -> kaddr mappings
-func (e Exporter) populateKaddrs() error {
+func (e *Exporter) populateKaddrs() error {
 	fd, err := os.Open("/proc/kallsyms")
 	if err != nil {
 		return err
@@ -237,6 +375,8 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.programInfoDesc
 	ch <- e.programAttachedDesc
 
+	e.decoderErrorCount.Describe(ch)
+
 	for _, cfg := range e.configs {
 		if _, ok := e.descs[cfg.Name]; !ok {
 			e.descs[cfg.Name] = map[string]*prometheus.Desc{}
@@ -244,7 +384,7 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 
 		for _, counter := range cfg.Metrics.Counters {
 			if counter.PerfEventArray {
-				perfSink := newPerfEventArraySink(e.decoders, e.modules[cfg.Name], counter)
+				perfSink := newPerfEventArraySink(e.decoders, e.modules[cfg.Name], counter, e.decoderErrorCount.WithLabelValues(cfg.Name))
 				e.perfEventArrayCollectors = append(e.perfEventArrayCollectors, perfSink)
 			}
 
@@ -254,17 +394,34 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 		for _, histogram := range cfg.Metrics.Histograms {
 			addDescs(cfg.Name, histogram.Name, histogram.Help, histogram.Labels[0:len(histogram.Labels)-1])
 		}
+
+		if e.tracingProvider == nil && len(cfg.Tracing.Spans) > 0 {
+			log.Printf("Tracing is not enabled, but some spans are configured in config %q", cfg.Name)
+		} else {
+			for _, span := range cfg.Tracing.Spans {
+				startTracingSink(e.tracingProvider, e.decoders, e.modules[cfg.Name], span, e.decoderErrorCount.WithLabelValues(cfg.Name))
+			}
+		}
 	}
 }
 
 // Collect satisfies prometheus.Collector interface and sends all metrics
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
+	e.activeMutex.Lock()
+	defer e.activeMutex.Unlock()
+
+	if !e.active {
+		return
+	}
+
 	for _, cfg := range e.configs {
 		ch <- prometheus.MustNewConstMetric(e.enabledConfigsDesc, prometheus.GaugeValue, 1, cfg.Name)
 	}
 
+	e.decoderErrorCount.Collect(ch)
+
 	for name, attachments := range e.attachedProgs {
-		for program, attached := range attachments {
+		for program, link := range attachments {
 			info, err := extractProgramInfo(program)
 			if err != nil {
 				log.Printf("Error extracting program info for %q in config %q: %v", program.Name(), name, err)
@@ -275,7 +432,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(e.programInfoDesc, prometheus.GaugeValue, 1, name, program.Name(), info.tag, id)
 
 			attachedValue := 0.0
-			if attached {
+			if link != nil {
 				attachedValue = 1.0
 			}
 
@@ -311,6 +468,7 @@ func (e *Exporter) collectCounters(ch chan<- prometheus.Metric) {
 
 			mapValues, err := e.mapValues(e.modules[cfg.Name], counter.Name, counter.Labels)
 			if err != nil {
+				e.decoderErrorCount.WithLabelValues(cfg.Name).Inc()
 				log.Printf("Error getting map %q values for metric %q of config %q: %s", counter.Name, counter.Name, cfg.Name, err)
 				continue
 			}
@@ -336,6 +494,7 @@ func (e *Exporter) collectHistograms(ch chan<- prometheus.Metric) {
 
 			mapValues, err := e.mapValues(e.modules[cfg.Name], histogram.Name, histogram.Labels)
 			if err != nil {
+				e.decoderErrorCount.WithLabelValues(cfg.Name).Inc()
 				log.Printf("Error getting map %q values for metric %q of config %q: %s", histogram.Name, histogram.Name, cfg.Name, err)
 				continue
 			}
@@ -421,7 +580,7 @@ func (e *Exporter) mapValues(module *libbpfgo.Module, name string, labels []conf
 			raw = raw[4:]
 		}
 
-		metricValues[i].labels, err = e.decoders.DecodeLabels(raw, labels)
+		metricValues[i].labels, err = e.decoders.DecodeLabelsForMetrics(raw, name, labels)
 		if err != nil {
 			if err == decoder.ErrSkipLabelSet {
 				continue
@@ -434,7 +593,7 @@ func (e *Exporter) mapValues(module *libbpfgo.Module, name string, labels []conf
 	return metricValues, nil
 }
 
-func (e Exporter) exportMaps() (map[string]map[string][]metricValue, error) {
+func (e *Exporter) exportMaps() (map[string]map[string][]metricValue, error) {
 	maps := map[string]map[string][]metricValue{}
 
 	for _, cfg := range e.configs {
@@ -464,6 +623,7 @@ func (e Exporter) exportMaps() (map[string]map[string][]metricValue, error) {
 		for name, labels := range metricMaps {
 			metricValues, err := e.mapValues(e.modules[cfg.Name], name, labels)
 			if err != nil {
+				e.decoderErrorCount.WithLabelValues(cfg.Name).Inc()
 				return nil, fmt.Errorf("error getting values for map %q of config %q: %s", name, cfg.Name, err)
 			}
 

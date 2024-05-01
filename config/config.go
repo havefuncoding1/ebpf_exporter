@@ -13,6 +13,7 @@ import (
 type Config struct {
 	Name    string   `yaml:"name"`
 	Metrics Metrics  `yaml:"metrics"`
+	Tracing Tracing  `yaml:"tracing"`
 	Kaddrs  []string `yaml:"kaddrs"`
 	BPFPath string
 }
@@ -44,11 +45,25 @@ type Histogram struct {
 	Labels           []Label             `yaml:"labels"`
 }
 
+// Tracing is a collection of spans attached to a program
+type Tracing struct {
+	Spans []Span `yaml:"spans"`
+}
+
+// Span describes how a span is decoded from the kernel
+type Span struct {
+	RingBuf string  `yaml:"ringbuf"`
+	Name    string  `yaml:"name"`
+	Service string  `yaml:"service"`
+	Labels  []Label `yaml:"labels"`
+}
+
 // Label defines how to decode an element from eBPF map key
 // with the list of decoders
 type Label struct {
 	Name     string    `yaml:"name"`
 	Size     uint      `yaml:"size"`
+	Padding  uint      `yaml:"padding"`
 	Decoders []Decoder `yaml:"decoders"`
 }
 
@@ -79,7 +94,7 @@ func ParseConfigs(dir string, names []string) ([]Config, error) {
 	configs := make([]Config, len(names))
 
 	for i, name := range names {
-		path := filepath.Join(dir, fmt.Sprintf("%s.yaml", name))
+		path := filepath.Join(dir, name+".yaml")
 
 		f, err := os.Open(path)
 		if err != nil {
@@ -100,15 +115,15 @@ func ParseConfigs(dir string, names []string) ([]Config, error) {
 			return nil, fmt.Errorf("error validating config: %v", err)
 		}
 
-		configs[i].BPFPath = filepath.Join(dir, fmt.Sprintf("%s.bpf.o", name))
+		configs[i].BPFPath = filepath.Join(dir, name+".bpf.o")
 	}
 
 	return configs, nil
 }
 
 func validateConfig(cfg *Config) error {
-	if cfg.Metrics.Counters == nil && cfg.Metrics.Histograms == nil {
-		return fmt.Errorf("metrics are not defined for config %q", cfg.Name)
+	if cfg.Metrics.Counters == nil && cfg.Metrics.Histograms == nil && cfg.Tracing.Spans == nil {
+		return fmt.Errorf("neither metrics nor tracing are defined for config %q", cfg.Name)
 	}
 
 	for _, counter := range cfg.Metrics.Counters {

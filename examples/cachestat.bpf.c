@@ -1,47 +1,53 @@
+// Use this version of cachestat when kernel version >= 5.16
+// https://github.com/cloudflare/ebpf_exporter/issues/132
+
 #include <vmlinux.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 #include "maps.bpf.h"
-#include "regs-ip.bpf.h"
+
+enum pache_cache_op {
+    OP_CACHE_ACCESS,
+    OP_CACHE_WRITES,
+    OP_PAGE_ADD_LRU,
+    OP_PAGE_MARK_DIRTIES,
+};
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 4);
-    __type(key, u64);
+    __type(key, u8);
     __type(value, u64);
 } page_cache_ops_total SEC(".maps");
 
-SEC("kprobe/add_to_page_cache_lru")
-int add_to_page_cache_lru(struct pt_regs *ctx)
+static int trace_event(enum pache_cache_op op)
 {
-    u64 ip = KPROBE_REGS_IP_FIX(PT_REGS_IP_CORE(ctx));
-    increment_map(&page_cache_ops_total, &ip, 1);
+    increment_map(&page_cache_ops_total, &op, 1);
     return 0;
 }
 
-SEC("kprobe/mark_page_accessed")
-int mark_page_accessed(struct pt_regs *ctx)
+SEC("fentry/mark_page_accessed")
+int mark_page_accessed()
 {
-    u64 ip = KPROBE_REGS_IP_FIX(PT_REGS_IP_CORE(ctx));
-    increment_map(&page_cache_ops_total, &ip, 1);
-    return 0;
+    return trace_event(OP_CACHE_ACCESS);
 }
 
-// This function is usually not visible.
-SEC("kprobe/folio_account_dirtied")
-int folio_account_dirtied(struct pt_regs *ctx)
+SEC("fentry/mark_buffer_dirty")
+int mark_buffer_dirty()
 {
-    u64 ip = KPROBE_REGS_IP_FIX(PT_REGS_IP_CORE(ctx));
-    increment_map(&page_cache_ops_total, &ip, 1);
-    return 0;
+    return trace_event(OP_CACHE_WRITES);
 }
 
-SEC("kprobe/mark_buffer_dirty")
-int mark_buffer_dirty(struct pt_regs *ctx)
+SEC("fentry/add_to_page_cache_lru")
+int add_to_page_cache_lru()
 {
-    u64 ip = KPROBE_REGS_IP_FIX(PT_REGS_IP_CORE(ctx));
-    increment_map(&page_cache_ops_total, &ip, 1);
-    return 0;
+    return trace_event(OP_PAGE_ADD_LRU);
+}
+
+SEC("raw_tp/writeback_dirty_folio")
+int writeback_dirty_folio()
+{
+    return trace_event(OP_PAGE_MARK_DIRTIES);
 }
 
 char LICENSE[] SEC("license") = "GPL";

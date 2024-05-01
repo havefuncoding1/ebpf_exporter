@@ -3,25 +3,31 @@ package decoder
 import (
 	"log"
 	"os"
+	"strings"
 
 	"github.com/jaypipes/pcidb"
 )
 
-const pciIdsPath = "/usr/share/misc/pci.ids"
-const missingPciIdsText = "missing pci.ids db"
+const missingPciIDsText = "missing pci.ids db"
 
+var pciIDsPaths = []string{"/usr/share/misc/pci.ids", "/usr/share/hwdata/pci.ids"}
 var pci *pcidb.PCIDB
 
 func init() {
-	if _, err := os.Stat(pciIdsPath); err != nil {
-		log.Printf("PCI DB path %q is not accessible: %v", pciIdsPath, err)
+	for _, path := range pciIDsPaths {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+
+		db, err := pcidb.New()
+		if err != nil {
+			log.Fatalf("Error initializing PCI DB: %v", err)
+		}
+
+		pci = db
+
 		return
 	}
 
-	db, err := pcidb.New()
-	if err != nil {
-		log.Fatalf("Error initializing PCI DB: %v", err)
-	}
-
-	pci = db
+	log.Printf("None of the PCI DB paths (%s) are accessible, PCI decoders will return empty data", strings.Join(pciIDsPaths, ", "))
 }

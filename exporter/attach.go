@@ -5,10 +5,13 @@ import (
 
 	"github.com/aquasecurity/libbpfgo"
 	"github.com/cloudflare/ebpf_exporter/v2/config"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
-func attachModule(module *libbpfgo.Module, cfg config.Config) map[*libbpfgo.BPFProg]bool {
-	attached := map[*libbpfgo.BPFProg]bool{}
+func attachModule(span trace.Span, module *libbpfgo.Module, cfg config.Config) map[*libbpfgo.BPFProg]*libbpfgo.BPFLink {
+	attached := map[*libbpfgo.BPFProg]*libbpfgo.BPFLink{}
 
 	iter := module.Iterator()
 	for {
@@ -17,13 +20,16 @@ func attachModule(module *libbpfgo.Module, cfg config.Config) map[*libbpfgo.BPFP
 			break
 		}
 
-		_, err := prog.AttachGeneric()
+		span.AddEvent("prog_attach", trace.WithAttributes(attribute.String("SEC", prog.SectionName())))
+
+		link, err := prog.AttachGeneric()
 		if err != nil {
 			log.Printf("Failed to attach program %q for config %q: %v", prog.Name(), cfg.Name, err)
-			attached[prog] = false
-		} else {
-			attached[prog] = true
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 		}
+
+		attached[prog] = link
 	}
 
 	return attached

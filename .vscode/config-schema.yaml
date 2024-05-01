@@ -2,6 +2,11 @@ title: ebpf_exporter config schema
 $schema: https://json-schema.org/draft/2020-12/schema
 type: object
 additionalProperties: false
+anyOf:
+  - required:
+      - metrics
+  - required:
+      - tracing
 properties:
   metrics:
     type: object
@@ -66,6 +71,27 @@ properties:
                 type: number
             labels:
               $ref: "#/definitions/labels"
+  tracing:
+    type: object
+    additionalProperties: false
+    properties:
+      spans:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required:
+            - ringbuf
+            - labels
+          properties:
+            name:
+              type: string
+            ringbuf:
+              type: string
+            service:
+              type: string
+            labels:
+              $ref: "#/definitions/labels"
   kaddrs:
     type: array
     items:
@@ -85,6 +111,8 @@ definitions:
           type: string
         size:
           type: number
+        padding:
+          type: number
         decoders:
           type: array
           items:
@@ -97,6 +125,9 @@ definitions:
                 enum:
                   - cgroup
                   - dname
+                  - errno
+                  - hex
+                  - ifname
                   - inet_ip
                   - kstack
                   - ksym

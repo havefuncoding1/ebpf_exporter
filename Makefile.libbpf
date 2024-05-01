@@ -1,6 +1,6 @@
 LIBBPF_TOP := $(realpath $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 
-LIBBPF_VERSION := 1.2.2
+LIBBPF_VERSION := 1.3.0
 LIBBPF_BRANCH := v$(LIBBPF_VERSION)
 LIBBPF_PATH := $(LIBBPF_TOP)/libbpf/dest/usr/lib/libbpf.so.$(LIBBPF_VERSION)
 
@@ -8,8 +8,8 @@ ifneq ($(BUILD_LIBBPF),0)
 LIBBPF_DEPS := $(LIBBPF_PATH)
 LIBBPF_CFLAGS := -I$(LIBBPF_TOP)/libbpf/dest/usr/include
 LIBBPF_LDFLAGS := -L$(LIBBPF_TOP)/libbpf/dest/usr/lib
-export CGO_LDFLAGS := $(CGO_LDFLAGS) $(LIBBPF_LDFLAGS)
-export CGO_CFLAGS := $(LIBBPF_CFLAGS)
+CGO_LDFLAGS := $(CGO_LDFLAGS) $(LIBBPF_LDFLAGS)
+CGO_CFLAGS := $(LIBBPF_CFLAGS)
 endif
 
 .PHONY: clean-libbpf
